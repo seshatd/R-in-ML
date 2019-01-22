@@ -1,0 +1,295 @@
+# GOAL: Identify the factors influencing attrition
+options(scipen=999)
+hr<-read.csv("file:///C:/Users/sesha/Desktop/IT/R/assignments/csv files/HR-Em.csv")
+hr$Attrition<-ifelse(hr$Attrition=="Yes",1,0)
+
+# EDA
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+names(hr)
+summary(hr)
+summary(sum(is.na(hr)))
+sum(hr$Attrition=="Yes")
+
+#Checking for Duplicate values
+unique(hr$Department)
+unique(hr$BusinessTravel)
+unique(hr$EducationField)
+unique(hr$Gender)
+unique(hr$JobRole)
+unique(hr$MaritalStatus)
+
+####'Preprocessing-Removing Nominal Variables / fields
+hr<-hr[,c(-9,-10,-22,-27)]
+
+####'Creating Training and Test set
+set.seed(123)
+library(caTools)
+split=sample.split(hr$Attrition, SplitRatio=0.7)
+training_set=subset(hr, split == TRUE)
+test_set=subset(hr, split == FALSE)
+
+####'Logistic Model with all variables
+lm<-glm(Attrition~.,family = "binomial", data = training_set)
+
+library(lmtest)
+lrtest(lm)
+library(pscl)
+pR2(lm)
+summary(lm)
+a<-exp(coef(lm))/(exp(coef(lm))+1)
+
+# Predicting Testing Dataset
+pred_test<-predict(lm, newdata = test_set, type = "response")
+cls_test <- ifelse(pred_test>0.5,1,0)
+
+# Confusion Matrix
+library(caret)
+caret::confusionMatrix(factor(cls_test), factor(test_set[,2]), positive="1")
+
+# ROC and AUC
+library(pROC)
+library(ROCR)
+predi <- prediction(predictions = cls_test,labels = test_set[,2])
+roc_curve <- performance(predi,measure = "tpr",x.measure = "fpr")
+plot(roc_curve)
+abline(0,1)
+auc <- performance(predi,"auc")
+auc@y.values[[1]]
+
+####ACCURCY CHECK FOR MODEL####
+library(ROSE)
+accuracy.meas(test_set$Attrition, cls_test)
+####'Precision=0.829 says that there is very little False Positives.
+####'Recall=0.408 means that there are higher number of False Negetives
+####'F=0.274 means model is weak
+
+#####OVER SAMPLING####
+table(training_set$Attrition)
+prop.table(table(training_set$Attrition))
+data_balanced_over<-ovun.sample(Attrition~., data = training_set, method = "over", N=1726)$data
+table(data_balanced_over$Attrition)
+
+####UNDER SMAPLING####
+data_balanced_under<-ovun.sample(Attrition~., data = training_set, method = "under", N=332, seed = 1)$data
+table(data_balanced_under$Attrition)
+
+####OVER AND UNDER SAMPLING = "BOTH"####
+data_balanced_both<-ovun.sample(Attrition~., data = training_set, method="both", p = 0.5)$data
+table(data_balanced_both$Attrition)
+
+####SYNTHETIC DATA####
+data.rose<-ROSE(Attrition~., data = training_set, seed = 1)$data
+table(data.rose$Attrition)
+
+####BUILDING MODELS
+lm.rose<-glm(Attrition~., data = data.rose)
+lm.over<-glm(Attrition~., data = data_balanced_over)
+lm.under<-glm(Attrition~., data = data_balanced_under)
+lm.both<-glm(Attrition~., data = data_balanced_both)
+
+####Deducing Probabilities
+p_lm.rose=exp(coef(lm.rose))/(1+exp(coef(lm.rose)))
+p_lm.over=exp(coef(lm.over))/(1+exp(coef(lm.over)))
+p_lm.under=exp(coef(lm.under))/(1+exp(coef(lm.under)))
+p_lm.both=exp(coef(lm.both))/(1+exp(coef(lm.both)))
+
+summary(a)
+summary(p_lm.rose)
+summary(p_lm.over)
+summary(p_lm.under)
+summary(p_lm.both)
+
+####PREDICTION WITH TEST SET
+pred.lm.rose<-predict(lm.rose, newdata = test_set)
+pred.lm.over<-predict(lm.over, newdata = test_set)
+pred.lm.under<-predict(lm.under, newdata = test_set)
+pred.lm.both<-predict(lm.both, newdata = test_set)
+
+####CONFUSION MATRIX FOR SYNTHETIC DATA
+T_pred.lm.rose<-ifelse(pred.lm.rose>0.5, 1,0)
+library(caret)
+lm.acc<-caret::confusionMatrix(factor(T_pred.lm.rose), factor(test_set[,2]), positive="1")
+
+####CONFUSION MATRIX FOR OVER SAMPLED DATA
+T_pred.lm.over<-ifelse(pred.lm.over>0.5, 1,0)
+caret::confusionMatrix(factor(T_pred.lm.over), factor(test_set[,2]), positive="1")
+
+####CONFUSION MATRIX FOR UNDER SAMPLED DATA
+T_pred.lm.under<-ifelse(pred.lm.under>0.5, 1,0)
+caret::confusionMatrix(factor(T_pred.lm.under), factor(test_set[,2]), positive="1")
+
+####CONFUSION MATRIX USING UNDER AND OVER SAMPLING  DATA
+T_pred.lm.both<-ifelse(pred.lm.both>0.5, 1,0)
+caret::confusionMatrix(factor(T_pred.lm.both), factor(test_set[,2]), positive="1")
+
+####ACCURACY OF PREDICTIONS
+roc.curve(test_set$Attrition, T_pred.lm.rose)
+roc.curve(test_set$Attrition, T_pred.lm.over)
+roc.curve(test_set$Attrition, T_pred.lm.under)
+roc.curve(test_set$Attrition, T_pred.lm.both)
+
+#####' -------------Decision Tree approach------------- 
+library(rpart)
+library(rpart.plot)
+
+#### Grid search for finding the best fit.
+h1 <- expand.grid(minsplit=c(10,11,12,13,14,15,16,17,18), minbucket=c(1,2,3,4,5))
+tmp<-NULL
+for(i in 1:nrow(h1)){
+  mins <- h1$minsplit[i]
+  minb <- h1$minbucket[i]
+  conti<-rpart.control(minsplit = mins, minbucket = minb, xval = 10)
+  dt.mod <- rpart(factor(Attrition)~., data=training_set, control = conti)
+  p1 <- predict(dt.mod, newdata=test_set, type = "class")
+  a <- caret::confusionMatrix(factor(p1), factor(test_set[,2]))
+  tmp[i]<- a$overall["Accuracy"]
+}
+
+### Identifying the best parameters producing best accuracy
+tmp
+h1[which.max(tmp),]
+h1[which.min(tmp),]
+
+####======================================================#####
+
+cont <- rpart.control(minsplit = 10,minbucket = 3,cp=0,xval=10)
+tree <- rpart(Attrition~., data=training_set, control = cont, method = "class")
+## Print and plot the tree
+print(tree)
+rpart.plot(tree,cex=0.6)
+pred.tree <- predict(tree,newdata=test_set,type="class")
+caret::confusionMatrix(factor(pred.tree),factor(test_set[,2]), positive="1")
+pred.tree<-as.numeric(pred.tree)
+library(pROC)
+library(ROCR)
+pred.tree.roc <- prediction(predictions = pred.tree, labels = test_set[,2])
+roc_curve <- performance(pred.tree.roc, measure = "tpr", x.measure = "fpr")
+plot(roc_curve)
+abline(0,1)
+auc1 <- performance(pred.tree.roc,"auc")
+auc1@y.values[[1]]
+
+#### Pruning
+cp <-printcp(tree)
+ptree <- prune(tree,0.0096386,"CP")
+rpart.plot(ptree,cex=0.6)
+print(ptree)
+printcp(tree)
+par(mar=c(5,4,4,5))
+plotcp(tree)
+
+#### Predict pruned tree
+pred1.tree <- predict(ptree, newdata=test_set, type="class")
+
+#### Confusion Matrix
+caret::confusionMatrix(factor(pred1.tree),factor(test_set[,2]), positive="1")
+pred1.tree<-as.numeric(pred1.tree)
+pred1.tree
+library(pROC)
+library(ROCR)
+pred1.tree.roc <- prediction(predictions = pred1.tree, labels = test_set[,2])
+roc_curve <- performance(pred1.tree.roc, measure = "tpr", x.measure = "fpr")
+plot(roc_curve)
+abline(0,1)
+auc2 <- performance(pred1.tree.roc,"auc")
+auc2@y.values[[1]]
+
+#### SAMPLING
+#####OVER SAMPLING####
+table(training_set$Attrition)
+prop.table(table(training_set$Attrition))
+dt.data_balanced_over<-ovun.sample(Attrition~., data = training_set, method = "over", N=1726)$data
+table(dt.data_balanced_over$Attrition)
+
+####UNDER SMAPLING####
+dt.data_balanced_under<-ovun.sample(Attrition~., data = training_set, method = "under", N=332, seed = 1)$data
+table(dt.data_balanced_under$Attrition)
+
+####OVER AND UNDER SAMPLING = "BOTH"####
+dt.data_balanced_both<-ovun.sample(Attrition~., data = training_set, method="both", p = 0.5)$data
+table(dt.data_balanced_both$Attrition)
+
+####SYNTHETIC DATA####
+dt.data.rose<-ROSE(Attrition~., data = training_set, seed = 1)$data
+table(dt.data.rose$Attrition)
+
+####BUILDING MODELS
+cont <- rpart.control(minsplit = 10,minbucket = 3,cp=0.0096386,xval=10)
+dt.rose <- rpart(Attrition~., data=dt.data.rose, control = cont, method = "class")
+dt.over <- rpart(Attrition~., data=dt.data_balanced_over, control = cont, method = "class")
+dt.under <- rpart(Attrition~., data=dt.data_balanced_under, control = cont, method = "class")
+dt.both <- rpart(Attrition~., data=dt.data_balanced_both, control = cont, method = "class")
+
+####PREDICTION WITH TEST SET
+pred.dt.rose<-predict(dt.rose, newdata = test_set)
+pred.dt.over<-predict(dt.over, newdata = test_set)
+pred.dt.under<-predict(dt.under, newdata = test_set)
+pred.dt.both<-predict(dt.both, newdata = test_set)
+
+####CONFUSION MATRIX FOR SYNTHETIC DATA
+predi.dt.rose=ifelse(pred.dt.rose>0.5, 1,0)
+cart.acc<-caret::confusionMatrix(factor(predi.dt.rose[,2]), factor(test_set[,2]), positive="1")
+
+####CONFUSION MATRIX FOR OVER SAMPLED DATA
+predi.dt.over<-ifelse(pred.dt.over>0.5, 1,0)
+caret::confusionMatrix(factor(predi.dt.over[,2]), factor(test_set[,2]), positive="1")
+
+####CONFUSION MATRIX FOR UNDER SAMPLED DATA
+predi.dt.under<-ifelse(pred.dt.under>0.5, 1,0)
+caret::confusionMatrix(factor(predi.dt.under[,2]), factor(test_set[,2]), positive="1")
+
+####CONFUSION MATRIX USING UNDER AND OVER SAMPLING  DATA
+predi.dt.both<-ifelse(pred.dt.both>0.5, 1,0)
+caret::confusionMatrix(factor(predi.dt.both[,2]), factor(test_set[,2]), positive="1")
+
+####ACCURACY OF PREDICTIONS
+roc.curve(test_set$Attrition, predi.dt.rose[,2])
+roc.curve(test_set$Attrition, predi.dt.over[,2])
+roc.curve(test_set$Attrition, predi.dt.under[,2])
+roc.curve(test_set$Attrition, predi.dt.both[,2])
+
+#### Random Forest
+library("randomForest")
+RF <- randomForest(as.factor(Attrition) ~ ., data = training_set,
+                   ntree=500, mtry = 3, nodesize = 10, importance=TRUE )
+print(RF)
+plot(RF)
+tRF <- tuneRF(x = training_set[,-2], y = as.factor(training_set$Attrition), 
+              mtryStart = 3, ntreeTry=100, stepFactor = 1.5, improve = 0.0001, 
+              trace=TRUE, plot = TRUE, doBest = TRUE, nodesize = 10, importance=TRUE)
+rf.pred <- predict(tRF, newdata = test_set, type = "class")
+rf.acc<-caret::confusionMatrix(factor(test_set[,2]), factor(rf.pred), positive = "1")
+varImpPlot(RF)
+
+####SVM
+library(e1071)
+#### Grid search for finding the best fit.
+h1 <- expand.grid(cost=c(40,50,60,70,90,100),gamma=c(1,5,10),kernel= c("radial", "polynomial", "linear"))
+tmp<-NULL
+for(i in 1:nrow(h1)){
+  ker <- h1$kernel[i]
+  cos <- h1$cost[i]
+  gam <- h1$gamma[i]
+  svm.mod <- svm(factor(Attrition)~., data=training_set, kernel=ker, cost=cos, gamma=gam)
+  p1 <- predict(svm.mod, newdata = test_set)
+  a <- caret::confusionMatrix(factor(p1), factor(test_set[,2]))
+  tmp[i]<- a$overall["Accuracy"]
+}
+
+### Identifying the best parameters producing best accuracy
+tmp
+h1[which.min(tmp),]
+
+#### Building SVM Model with cost=40, gamma=1, kernel = radial
+svm.mod1<-svm(factor(Attrition)~., data = training_set, cost = 40, gamma = 1, kernel = "radial")
+p2<-predict(svm.mod1, newdata = test_set, type="class")
+svm.acc<-caret::confusionMatrix(factor(test_set[,2]), factor(p2), positive="1")
+with(data = test_set, expr = sum(Attrition==1))
+acc.df <- data.frame(Models=c("Random Forest","CART", "Logistic Regression"))
+acc.df$Training <- c(rf.acc$overall["Accuracy"], cart.acc$overall["Accuracy"], lm.acc$overall["Accuracy"])
+### Model accuracy table
+library(ggplot2)
+ggplot(acc.df,aes(Models,Training, fill=Models)) + geom_bar(stat = 'identity') + 
+  theme(axis.text.x = element_text(size = 10, angle = 90))
